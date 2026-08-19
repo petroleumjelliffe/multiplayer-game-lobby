@@ -50,6 +50,13 @@ export interface RosterMessage {
   roomId: string;
   lifecycle: Lifecycle;
   players: { id: string; name: string; isHost: boolean; connected: boolean }[];
+  /**
+   * Watchers, by name. Deliberately public: a table knows who is standing
+   * behind it. A spectator holds no seat — their id is minted outside the
+   * game's seat space and never appears in `players`, which is what keeps a
+   * game's per-seat projection from ever having a hand to send them.
+   */
+  spectators: { id: string; name: string; connected: boolean }[];
 }
 
 /**
@@ -69,6 +76,14 @@ export interface JoinRoomMessage {
   name?: string;
   playerId?: string;
   token?: string;
+  /**
+   * Arrive as a watcher rather than a player, in any lifecycle — it is the
+   * way into a room whose game has already begun, or whose seats are full.
+   * An explicit request to watch never triggers the honor-system seat
+   * reclaim: someone asking to spectate must not capture an abandoned seat
+   * that happens to share their name.
+   */
+  spectate?: boolean;
   protocolVersion: number;
 }
 export interface RenamePlayerMessage { name: string }
@@ -92,6 +107,21 @@ export const LOBBY_CLIENT_EVENTS = {
    * one gives it up.
    */
   leaveSeat: 'leaveSeat',
+  /**
+   * Give up your own seat and stay to watch. Non-host only — a host stepping
+   * back is `leaveSeat`, which promotes a replacement; converting them would
+   * leave a room nobody can start. Always allowed in the lobby; mid-game only
+   * when the game opts in via `LobbyHooks.allowMidgameSpectate`.
+   *
+   * The seat id returns to the pool and the watcher gets a fresh identity
+   * (spectator ids live outside the seat space), delivered by a new `joined`.
+   */
+  spectate: 'spectate',
+  /**
+   * The reverse: a spectator takes a free seat. Lobby-only — a started game's
+   * seats were dealt into, and arriving in one mid-game is not built.
+   */
+  takeSeat: 'takeSeat',
 } as const;
 
 export const LOBBY_SERVER_EVENTS = {

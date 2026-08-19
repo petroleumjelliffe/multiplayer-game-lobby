@@ -38,8 +38,17 @@ export interface LobbyConnection {
   beginGame(): void;
   /** Rename your own seat. Lobby-only; the server enforces it. */
   renamePlayer(name: string): void;
-  /** Give up your own seat. Lobby-only; mid-game leaving is a disconnect. */
+  /** Give up your own seat. Lobby-only; mid-game leaving is a disconnect.
+   *  For a spectator: stop watching, in any lifecycle. */
   leaveSeat(): void;
+  /**
+   * Give up your seat but stay to watch. Non-host only; the lobby always
+   * allows it, mid-game only a game that opted in does — the server enforces
+   * both, and a fresh `joined` delivers the watcher's new identity.
+   */
+  spectate(): void;
+  /** A spectator claims a free seat. Lobby-only; the server enforces it. */
+  takeSeat(): void;
   onJoined(handler: (msg: JoinedMessage) => void): () => void;
   onRoster(handler: (msg: RosterMessage) => void): () => void;
   /**
@@ -115,6 +124,8 @@ export function createLobbyConnection(opts: LobbyConnectionOptions): LobbyConnec
       socket.emit(LOBBY_CLIENT_EVENTS.renamePlayer, msg);
     },
     leaveSeat() { socket.emit(LOBBY_CLIENT_EVENTS.leaveSeat); },
+    spectate() { socket.emit(LOBBY_CLIENT_EVENTS.spectate); },
+    takeSeat() { socket.emit(LOBBY_CLIENT_EVENTS.takeSeat); },
     onJoined(handler) {
       socket.on(LOBBY_SERVER_EVENTS.joined, handler);
       return () => { socket.off(LOBBY_SERVER_EVENTS.joined, handler); };

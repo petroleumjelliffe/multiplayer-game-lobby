@@ -17,10 +17,16 @@ function makeStub(id: string, players: SeatHolder[]): StubRoom {
 }
 
 // Compile-time proof the hook types instantiate over a non-GameRoom room.
+// `onSpectate` is required on purpose: a game that ignores it ships
+// spectators who see nothing, and this repo prefers the omission to be a
+// compile error at the submodule bump. `allowMidgameSpectate` stays absent
+// here — mid-game conversion is opt-in, and a consumer without it compiling
+// is the proof of that.
 const _hooks: LobbyHooks<StubRoom> = {
   protocolVersion: 1,
   onBegin: (room) => { room.begun = true; },
   onSeated: () => {},
+  onSpectate: () => {},
 };
 void _hooks;
 

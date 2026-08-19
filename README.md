@@ -44,9 +44,10 @@ opaque field here plus uniqueness enforcement.
 
 ## The contract a game implements
 
-See [`protocol/README.md`](protocol/README.md) — the room shape, the two hooks
-(`onBegin`, `onSeated`), the protocol version, the `appId` namespace, and the
-seat-id space the game supplies.
+See [`protocol/README.md`](protocol/README.md) — the room shape, the three
+hooks (`onBegin`, `onSeated`, `onSpectate`), the optional mid-game spectate
+policy, the protocol version, the `appId` namespace, and the seat-id space the
+game supplies.
 
 ## The client integration checklist
 

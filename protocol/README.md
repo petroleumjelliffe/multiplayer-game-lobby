@@ -27,11 +27,23 @@ simultaneous: all equally at home; whatever happens after `onBegin` is yours.
 - **A room**: anything with `id`, `players: SeatHolder[]`, and `lifecycle()`
   returning `'lobby' | 'playing' | 'over'`. Pass a `makeRoom(id, players)`
   factory to `createLobbyRegistry`.
-- **Two hooks** for `createLobbyHandlers`: `onBegin(room)` — host pressed start,
-  lobby has validated host + lifecycle; begin your game, call
+- **Three hooks** for `createLobbyHandlers`: `onBegin(room)` — host pressed
+  start, lobby has validated host + lifecycle; begin your game, call
   `wiring.broadcastRoster(room)`, send your own state. `onSeated(room, playerId)`
   — a socket was seated (join or rejoin); send them your game's state if one is
-  running.
+  running. `onSpectate(room, spectatorId, vacatedSeatId)` — a socket became a
+  spectator (direct join, rejoin, or a seated player converting); send them your
+  game's **public** state — spectators see everything except hidden hands, and
+  your projection layer is what enforces that (a spectator's id never appears in
+  `room.players`, and the socket's `SeatBinding.role` says which kind of
+  audience you have). `vacatedSeatId` names the seat a converting player gave
+  up, null for a direct arrival.
+- **Optionally, a mid-game spectate policy**: `allowMidgameSpectate(room,
+  playerId)` on the same hooks. Absent means seated players convert in the
+  lobby only. A game that returns true takes on the emptied seat — skipped
+  turns, forfeits, whatever the rules say — with `vacatedSeatId` saying which
+  seat that is. Newcomers can always *watch* a started game; this policy is
+  only about a seated player abandoning a seat mid-game.
 - **Your protocol version** (`protocolVersion` on the hooks and on
   `createLobbyConnection`) — the lobby has no version of its own; your game's
   number covers both halves of the wire.
@@ -51,3 +63,8 @@ simultaneous: all equally at home; whatever happens after `onBegin` is yours.
 - Some rejection codes carry game-flavored names (`notYourTurn` for "not the
   host") — wire legacy; renaming costs a protocol bump.
 - Reconnect/backoff socket options are fixed (infinite retries, 500ms–5s).
+- **Spectators are public by name** (the roster carries them), unlimited in
+  number, and the host can never convert — a host stepping back is `leaveSeat`,
+  which promotes a replacement. Taking this feature is a wire change
+  (`roster.spectators`, `joinRoom.spectate`, the `spectate`/`takeSeat` events):
+  bump your `protocolVersion` when you bump the submodule.

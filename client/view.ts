@@ -33,10 +33,30 @@ export interface LobbySeat {
   canRename: boolean;
 }
 
+export interface LobbySpectator {
+  id: string;
+  name: string;
+  connected: boolean;
+  isYou: boolean;
+}
+
 export interface LobbyView {
   /** Exactly `limits.capacity` entries: the occupied ones, then empties. */
   seats: LobbySeat[];
+  /** Whoever is watching. Unlike seats there is no capacity to pad to. */
+  spectators: LobbySpectator[];
+  /** Your seat — null while spectating, which is what `youAreSpectating` says. */
   you: LobbySeat | null;
+  youAreSpectating: boolean;
+  /**
+   * Your seat, non-host, still in the lobby. Deliberately lobby-only even
+   * though the wire allows mid-game conversion where the game opted in: that
+   * allowance is the game's own policy (`allowMidgameSpectate`), so a game
+   * that grants it draws its own mid-game control rather than reading this.
+   */
+  canSpectate: boolean;
+  /** Spectating, still in the lobby, and a seat is free. */
+  canTakeSeat: boolean;
   /** The room code. The *game* builds any URL from it — base paths are per-repo. */
   code: string;
   canBegin: boolean;
@@ -99,6 +119,17 @@ export function lobbyView(state: LobbySnapshot, limits: LobbyLimits): LobbyView 
 
   const you = seats.find((seat) => seat.isYou) ?? null;
 
+  // `?? []` twice over: no roster yet, or a roster from a server built before
+  // spectating existed — a consumer mid-migration should degrade to "nobody
+  // is watching", not throw.
+  const spectators: LobbySpectator[] = (state.roster?.spectators ?? []).map((s) => ({
+    id: s.id,
+    name: s.name,
+    connected: s.connected,
+    isYou: s.id === state.playerId,
+  }));
+  const youAreSpectating = spectators.some((s) => s.isYou);
+
   // notHost before notEnoughPlayers: a guest should be told the thing that is
   // theirs to know, not the thing that is merely also true.
   const beginBlocked: LobbyView['beginBlocked'] =
@@ -112,7 +143,12 @@ export function lobbyView(state: LobbySnapshot, limits: LobbyLimits): LobbyView 
 
   return {
     seats,
+    spectators,
     you,
+    youAreSpectating,
+    canSpectate: lifecycle === 'lobby' && you !== null && !you.isHost,
+    canTakeSeat:
+      lifecycle === 'lobby' && youAreSpectating && players.length < limits.capacity,
     code: state.roster?.roomId ?? '',
     canBegin: beginBlocked === null,
     beginBlocked,

@@ -90,3 +90,95 @@ describe('seating from a fixed id space', () => {
     expect(seatPlayer({ ids: [] }, [], 'Ada')).toBeNull();
   });
 });
+
+describe('spectating', () => {
+  it('converting frees the seat id for the next arrival', () => {
+    const r = registry();
+    const { room } = r.create('Ada');
+    const margo = r.join(room.id, 'Margo')!.player;
+
+    const converted = r.spectate(room.id, margo.id)!;
+    expect(converted.vacatedSeatId).toBe('p2');
+    expect(r.join(room.id, 'Dev')?.player.id).toBe('p2');
+  });
+
+  it('a converted player keeps the name but nothing else of the seat', () => {
+    // The old seat's credentials die with the seat: a spectator id lives
+    // outside the seat space, and the old token must not open anything.
+    const r = registry();
+    const { room } = r.create('Ada');
+    const margo = r.join(room.id, 'Margo')!.player;
+
+    const { seated } = r.spectate(room.id, margo.id)!;
+    expect(seated.role).toBe('spectator');
+    expect(seated.player.name).toBe('Margo');
+    expect(SPACE.ids).not.toContain(seated.player.id);
+    expect(seated.player.token).not.toBe(margo.token);
+    expect(r.join(room.id, undefined, margo.id, margo.token)).toBeNull();
+  });
+
+  it('a spectator rejoin must present its own token, like a seat', () => {
+    const r = registry();
+    const { room } = r.create('Ada');
+    const bee = r.joinAsSpectator(room.id, 'Bee')!.player;
+
+    expect(r.join(room.id, undefined, bee.id, 'wrong-token')).toBeNull();
+    const back = r.join(room.id, undefined, bee.id, bee.token)!;
+    expect(back.role).toBe('spectator');
+    expect(back.player.id).toBe(bee.id);
+  });
+
+  it('watching a full or started room always works — no capacity, any lifecycle', () => {
+    const r = registry();
+    const { room } = r.create('Ada');
+    r.join(room.id, 'Margo');
+    r.join(room.id, 'Dev');
+    room.stage = 'playing';
+
+    expect(r.join(room.id, 'Kit')).toBeNull();
+    const kit = r.joinAsSpectator(room.id, 'Kit');
+    expect(kit?.role).toBe('spectator');
+    expect(room.spectators).toHaveLength(1);
+  });
+
+  it('names an unnamed watcher by headcount', () => {
+    const r = registry();
+    const { room } = r.create('Ada');
+    expect(r.joinAsSpectator(room.id)?.player.name).toBe('Spectator 1');
+    expect(r.joinAsSpectator(room.id)?.player.name).toBe('Spectator 2');
+  });
+
+  it('takeSeat is the exact reverse, into the freed id', () => {
+    const r = registry();
+    const { room } = r.create('Ada');
+    const margo = r.join(room.id, 'Margo')!.player;
+    r.spectate(room.id, margo.id);
+
+    const spectatorId = room.spectators![0]!.id;
+    const seated = r.takeSeat(room.id, spectatorId)!;
+    expect(seated.role).toBe('player');
+    expect(seated.player.id).toBe('p2');
+    expect(seated.player.name).toBe('Margo');
+    expect(room.spectators).toHaveLength(0);
+  });
+
+  it('takeSeat refuses a full room and keeps the watcher watching', () => {
+    const r = registry();
+    const { room } = r.create('Ada');
+    r.join(room.id, 'Margo');
+    r.join(room.id, 'Dev');
+    const bee = r.joinAsSpectator(room.id, 'Bee')!.player;
+
+    expect(r.takeSeat(room.id, bee.id)).toBeNull();
+    expect(room.spectators).toHaveLength(1);
+  });
+
+  it('a watcher seated into an empty room becomes host, so the lobby can start', () => {
+    const r = registry();
+    const { room } = r.create('Ada');
+    const bee = r.joinAsSpectator(room.id, 'Bee')!.player;
+    room.players.splice(0, 1); // everyone left; only Bee remains, watching
+
+    expect(r.takeSeat(room.id, bee.id)?.player.isHost).toBe(true);
+  });
+});
