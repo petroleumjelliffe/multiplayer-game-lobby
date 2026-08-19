@@ -18,14 +18,60 @@ export interface SeatHolder {
 export interface LobbyRoomLike {
   id: string;
   players: SeatHolder[];
+  /**
+   * Watchers. Optional and lazily initialised (see `spectatorsOf`) so that
+   * every `makeRoom` written before spectating existed — and every room
+   * restored from a disk that predates it — keeps working untouched. A
+   * spectator is a `SeatHolder` in shape only: `isHost` is always false and
+   * the id is minted outside the game's seat space, so it can never collide
+   * with a seat or shrink the pool.
+   */
+  spectators?: SeatHolder[];
   lifecycle(): Lifecycle;
 }
 
-export interface Seated<R extends LobbyRoomLike> { room: R; player: SeatHolder }
+/**
+ * The lobby's answer to "who did this socket just become". `role` is what a
+ * game's projection layer branches on: a `player` is in `room.players` and may
+ * hold hidden state; a `spectator` gets the public view and nothing else.
+ */
+export interface Seated<R extends LobbyRoomLike> {
+  room: R;
+  player: SeatHolder;
+  role: 'player' | 'spectator';
+}
+
+/** The one accessor for a room's watchers — reads initialise, so no caller
+ *  ever branches on a room built before the field existed. */
+export function spectatorsOf(room: LobbyRoomLike): SeatHolder[] {
+  return (room.spectators ??= []);
+}
 
 export interface LobbyRegistry<R extends LobbyRoomLike> {
   create(hostName?: string): Seated<R>;
   join(roomId: string, name?: string, playerId?: string, token?: string): Seated<R> | null;
+  /**
+   * Arrive as a watcher — any lifecycle, since watching is what a full or
+   * already-started room still offers. Null only when the room is not there:
+   * spectating has no capacity to run out of.
+   */
+  joinAsSpectator(roomId: string, name?: string): Seated<R> | null;
+  /**
+   * Convert a seated player into a spectator: the seat id returns to the
+   * pool, the name travels, and a fresh identity (id + token) is minted —
+   * the old seat's credentials die with the seat. Mechanics only: whether
+   * this player *may* convert (non-host, lifecycle, game policy) is the
+   * handlers' ruling. `vacatedSeatId` is for the game's `onSpectate`, which
+   * may need to know which seat just emptied mid-game.
+   */
+  spectate(roomId: string, playerId: string): { seated: Seated<R>; vacatedSeatId: string } | null;
+  /**
+   * The reverse conversion: a spectator claims a free seat, keeping their
+   * name. Null when the room is gone, the id is not a spectator here, or
+   * every seat is taken. Mechanics only, like `spectate`; lobby-only is the
+   * handlers' ruling.
+   */
+  takeSeat(roomId: string, spectatorId: string): Seated<R> | null;
   get(roomId: string): R | undefined;
   all(): R[];
   /**
@@ -97,6 +143,23 @@ export function seatPlayer(
   };
 }
 
+/**
+ * A watcher's record. `randomUUID` for the id because spectator identity has
+ * no space to allocate from: seats are a game's finite resource, watching is
+ * not. The default name numbers by current headcount — after leaves it can
+ * repeat, and that is fine, names were never unique here.
+ */
+function seatSpectator(taken: readonly SeatHolder[], name?: string): SeatHolder {
+  const given = name?.trim();
+  return {
+    id: randomUUID(),
+    name: given ? given : `Spectator ${taken.length + 1}`,
+    token: randomUUID(),
+    isHost: false,
+    connected: true,
+  };
+}
+
 /** Six characters, unambiguous: no O/0 or I/1 to read out loud incorrectly. */
 function roomCode(): string {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -125,7 +188,7 @@ export function createLobbyRegistry<R extends LobbyRoomLike>(
       if (!host) throw new Error('SeatSpace has no ids: a room could seat nobody');
       const room = makeRoom(id, [host]);
       rooms.set(id, room);
-      return { room, player: host };
+      return { room, player: host, role: 'player' };
     },
 
     join(roomId, name, playerId, token) {
@@ -133,13 +196,22 @@ export function createLobbyRegistry<R extends LobbyRoomLike>(
       if (!room) return null;
 
       if (playerId) {
-        const existing = room.players.find((p) => p.id === playerId);
         // A rejoin must prove itself. Without this, presenting someone else's
         // id would bind their seat to your socket and project their hand to
         // you — which is the whole guarantee projection exists to provide.
-        if (!existing || existing.token !== token) return null;
-        existing.connected = true;
-        return { room, player: existing };
+        // Spectator identities rejoin through the same door: one stored
+        // (id, token) pair, whichever kind of standing it bought.
+        const existing = room.players.find((p) => p.id === playerId);
+        if (existing && existing.token === token) {
+          existing.connected = true;
+          return { room, player: existing, role: 'player' };
+        }
+        const watching = spectatorsOf(room).find((s) => s.id === playerId);
+        if (watching && watching.token === token) {
+          watching.connected = true;
+          return { room, player: watching, role: 'spectator' };
+        }
+        return null;
       }
 
       if (room.lifecycle() !== 'lobby') {
@@ -157,12 +229,55 @@ export function createLobbyRegistry<R extends LobbyRoomLike>(
         if (!abandoned) return null;
         abandoned.token = randomUUID();
         abandoned.connected = true;
-        return { room, player: abandoned };
+        return { room, player: abandoned, role: 'player' };
       }
       const player = seatPlayer(space, room.players, name);
       if (!player) return null; // every seat is taken
       room.players.push(player);
-      return { room, player };
+      return { room, player, role: 'player' };
+    },
+
+    joinAsSpectator(roomId, name) {
+      const room = rooms.get(roomId);
+      if (!room) return null;
+      const watchers = spectatorsOf(room);
+      const spectator = seatSpectator(watchers, name);
+      watchers.push(spectator);
+      return { room, player: spectator, role: 'spectator' };
+    },
+
+    spectate(roomId, playerId) {
+      const room = rooms.get(roomId);
+      if (!room) return null;
+      const at = room.players.findIndex((p) => p.id === playerId);
+      if (at === -1) return null;
+
+      const seat = room.players[at]!;
+      room.players.splice(at, 1);
+      const spectator = seatSpectator(spectatorsOf(room), seat.name);
+      spectatorsOf(room).push(spectator);
+      return {
+        seated: { room, player: spectator, role: 'spectator' },
+        vacatedSeatId: seat.id,
+      };
+    },
+
+    takeSeat(roomId, spectatorId) {
+      const room = rooms.get(roomId);
+      if (!room) return null;
+      const watchers = spectatorsOf(room);
+      const at = watchers.findIndex((s) => s.id === spectatorId);
+      if (at === -1) return null;
+
+      const player = seatPlayer(space, room.players, watchers[at]!.name);
+      if (!player) return null; // every seat is taken — the watcher keeps watching
+      // Only after the seat is secured, so a full room converts nobody into
+      // nothing. `seatPlayer` decides host: a room whose players all left has
+      // an empty `players`, and the watcher stepping in becomes host — a
+      // lobby with no host is a lobby nobody can ever start.
+      watchers.splice(at, 1);
+      room.players.push(player);
+      return { room, player, role: 'player' };
     },
 
     get: (roomId) => rooms.get(roomId),

@@ -13,10 +13,20 @@ const base = (over: Partial<LobbySnapshot> = {}): LobbySnapshot => ({
       { id: 'p1', name: 'Ada', isHost: true, connected: true },
       { id: 'p2', name: 'Margo', isHost: false, connected: true },
     ],
+    spectators: [],
   },
   playerId: 'p2',
   ...over,
 });
+
+const watching = (playerId = 'w1'): LobbySnapshot =>
+  base({
+    playerId,
+    roster: {
+      ...base().roster!,
+      spectators: [{ id: 'w1', name: 'Bee', connected: true }],
+    },
+  });
 
 describe('seats', () => {
   it('pads to capacity, so an empty seat is expressible at all', () => {
@@ -81,6 +91,7 @@ describe('beginning', () => {
         roomId: 'ABC123',
         lifecycle: 'lobby',
         players: [{ id: 'p1', name: 'Ada', isHost: true, connected: true }],
+        spectators: [],
       },
     });
     expect(lobbyView(solo, LIMITS).beginBlocked).toBe('notEnoughPlayers');
@@ -95,6 +106,58 @@ describe('beginning', () => {
     // A guest in a short room should be told the thing that is theirs to
     // know, not the thing that is merely also true.
     expect(lobbyView(base(), { capacity: 4, minPlayers: 3 }).beginBlocked).toBe('notHost');
+  });
+});
+
+describe('spectating', () => {
+  it('lists the watchers and knows which one is you', () => {
+    const view = lobbyView(watching(), LIMITS);
+    expect(view.spectators.map((s) => s.name)).toEqual(['Bee']);
+    expect(view.youAreSpectating).toBe(true);
+    // A spectator holds no seat: `you` is the seat accessor and stays empty.
+    expect(view.you).toBeNull();
+  });
+
+  it('is not you when you hold a seat instead', () => {
+    const view = lobbyView(watching('p2'), LIMITS);
+    expect(view.youAreSpectating).toBe(false);
+    expect(view.spectators[0]!.isYou).toBe(false);
+    expect(view.you?.id).toBe('p2');
+  });
+
+  it('offers spectate to a seated non-host, in the lobby only', () => {
+    expect(lobbyView(base(), LIMITS).canSpectate).toBe(true);
+    // The host is refused: converting them would leave a room nobody can start.
+    expect(lobbyView(base({ playerId: 'p1' }), LIMITS).canSpectate).toBe(false);
+    // Mid-game conversion is the game's own policy (allowMidgameSpectate),
+    // so the shared view never offers it — a game that grants it draws its
+    // own control.
+    const playing = base({ roster: { ...base().roster!, lifecycle: 'playing' } });
+    expect(lobbyView(playing, LIMITS).canSpectate).toBe(false);
+    // A watcher has no seat to give up.
+    expect(lobbyView(watching(), LIMITS).canSpectate).toBe(false);
+  });
+
+  it('offers a seat back to a watcher while the lobby has one free', () => {
+    expect(lobbyView(watching(), LIMITS).canTakeSeat).toBe(true);
+    // Not to somebody already seated.
+    expect(lobbyView(base(), LIMITS).canTakeSeat).toBe(false);
+    // Not once the game has begun.
+    const playing = watching();
+    playing.roster = { ...playing.roster!, lifecycle: 'playing' };
+    expect(lobbyView(playing, LIMITS).canTakeSeat).toBe(false);
+    // Not when every seat is taken.
+    expect(lobbyView(watching(), { capacity: 2, minPlayers: 2 }).canTakeSeat).toBe(false);
+  });
+
+  it('degrades to nobody watching on a roster from before spectating existed', () => {
+    // A consumer mid-migration hands over a roster without the field; the
+    // cast is that stale shape arriving over the wire.
+    const stale = base();
+    delete (stale.roster as { spectators?: unknown }).spectators;
+    const view = lobbyView(stale, LIMITS);
+    expect(view.spectators).toEqual([]);
+    expect(view.youAreSpectating).toBe(false);
   });
 });
 

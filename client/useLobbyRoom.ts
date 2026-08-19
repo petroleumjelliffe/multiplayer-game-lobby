@@ -18,6 +18,12 @@ export interface LobbyRoomState {
    * server to name the seat, which is what every ordinary arrival now does.
    */
   join(name?: string): void;
+  /**
+   * Join as a watcher instead — any lifecycle, so it is the offer a screen
+   * makes when a join was refused because the game already began or the
+   * seats are full. Never triggers the honor-system seat reclaim.
+   */
+  watch(name?: string): void;
   begin(): void;
   /** Rename your own seat, lobby-only. The roster broadcast is the answer. */
   rename(name: string): void;
@@ -27,6 +33,15 @@ export interface LobbyRoomState {
    * would make the next visit attempt a rejoin the server must refuse.
    */
   leaveSeat(): void;
+  /**
+   * Give up your seat but stay to watch. Non-host only; lobby always, mid-game
+   * only where the game opted in — the server refuses the rest, and the
+   * refusal arrives on `message`. The new identity arrives as an ordinary
+   * `joined`, so the stored one updates without any handling here.
+   */
+  spectate(): void;
+  /** Take a free seat while spectating, lobby-only. The reverse of `spectate`. */
+  takeSeat(): void;
 }
 
 /**
@@ -193,7 +208,22 @@ export function useLobbyRoom(
     });
   }, [connection, roomId, identity]);
 
+  const watch = useCallback((name?: string) => {
+    if (name !== undefined) identity.rememberName(name);
+    sent.current = true;
+    setMessage(null);
+    connection.joinRoom({
+      roomId,
+      spectate: true,
+      ...(name === undefined ? {} : { name }),
+    });
+  }, [connection, roomId, identity]);
+
   const begin = useCallback(() => { connection.beginGame(); }, [connection]);
+
+  const spectate = useCallback(() => { connection.spectate(); }, [connection]);
+
+  const takeSeat = useCallback(() => { connection.takeSeat(); }, [connection]);
 
   const rename = useCallback((name: string) => {
     connection.renamePlayer(name);
@@ -231,5 +261,8 @@ export function useLobbyRoom(
               : status !== 'open' ? 'connecting'
                 : 'joining';
 
-  return { phase, status, roster, playerId, message, gone, stale, join, begin, rename, leaveSeat };
+  return {
+    phase, status, roster, playerId, message, gone, stale,
+    join, watch, begin, rename, leaveSeat, spectate, takeSeat,
+  };
 }
